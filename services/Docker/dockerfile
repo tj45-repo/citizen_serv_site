@@ -1,0 +1,53 @@
+# --- Stage 1: build the React app (optional) ---
+FROM node:20-bullseye AS webbuild
+WORKDIR /web
+COPY web-frontend/ ./
+RUN npm ci && npm run build
+
+# --- Stage 2: everything in one container (Ubuntu + Python + MySQL + supervisord) ---
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y \
+      python3 python3-pip python3-venv \
+      mysql-server \
+      supervisor \
+      build-essential curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Python deps (single requirements at repo root)
+COPY ./services/requirements.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir -r /app/requirements.txt
+
+# Copy services and gateway from your current tree
+# (copy into underscore package names so Gunicorn can import them)
+COPY services/birth-service/   /app/birth_service/
+COPY services/vehicle-service/ /app/vehicle_service/
+COPY services/housing-service/ /app/housing_service/
+COPY services/gateway/         /app/gateway/
+
+# Ensure they are real Python packages even if __init__.py is missing locally
+RUN [ -f /app/birth_service/__init__.py ]   || touch /app/birth_service/__init__.py && \
+    [ -f /app/vehicle_service/__init__.py ] || touch /app/vehicle_service/__init__.py && \
+    [ -f /app/housing_service/__init__.py ] || touch /app/housing_service/__init__.py
+
+# Copy Vite build
+COPY --from=webbuild /web/dist /app/web-frontend/dist
+
+# MySQL one-time init SQL + startup script + supervisord
+COPY services/Docker/mysql-init/     /app/docker/mysql-init/
+COPY services/Docker/start-mysql.sh  /usr/local/bin/start-mysql.sh
+COPY services/Docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+RUN chmod +x /usr/local/bin/start-mysql.sh
+
+# MySQL runtime dirs
+RUN mkdir -p /var/lib/mysql /run/mysqld /data \
+ && chown -R mysql:mysql /var/lib/mysql /run/mysqld
+
+EXPOSE 8080
+CMD ["/usr/bin/supervisord","-c","/etc/supervisor/conf.d/supervisord.conf"]
