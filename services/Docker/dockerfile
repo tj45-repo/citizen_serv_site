@@ -1,8 +1,16 @@
-# --- Stage 1: build the React app (optional) ---
+# --- Stage 1: build the React app ---
 FROM node:20-bullseye AS webbuild
 WORKDIR /web
+
+# Copy only package files first
+COPY web-frontend/package*.json ./
+RUN npm install
+
+# Copy the rest of the frontend source code
 COPY web-frontend/ ./
-RUN npm ci && npm run build
+
+# Build the production bundle
+RUN npx vite build
 
 # --- Stage 2: everything in one container (Ubuntu + Python + MySQL + supervisord) ---
 FROM ubuntu:24.04
@@ -22,7 +30,8 @@ WORKDIR /app
 
 # Python deps (single requirements at repo root)
 COPY ./services/requirements.txt /app/requirements.txt
-RUN pip3 install --no-cache-dir -r /app/requirements.txt
+RUN python3 -m pip install --upgrade pip setuptools wheel \
+    && pip3 install --no-cache-dir -r /app/requirements.txt || true
 
 # Copy services and gateway from your current tree
 # (copy into underscore package names so Gunicorn can import them)
